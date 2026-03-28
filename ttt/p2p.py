@@ -4,14 +4,18 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import urlencode
 
+from .env_utils import load_dotenv
 from .game import EMPTY, O, X, GameState, Symbol
 
 API_URL = "https://www.notexponential.com/aip2pgaming/api/index.php"
 HTTP_STATUS_MARKER = "__HTTP_STATUS__:"
+CURL_TRANSIENT_EXIT_CODES = {7, 18, 28, 35, 52, 55, 56}
+HTTP_TRANSIENT_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 
 
 class P2PApiError(RuntimeError):
@@ -29,13 +33,15 @@ class ApiCredentials:
 
     @staticmethod
     def from_env(env: Mapping[str, str] | None = None) -> "ApiCredentials":
+        if env is None:
+            load_dotenv()
         source = env if env is not None else os.environ
         user_id = source.get("AIP2P_USER_ID", "").strip()
         api_key = source.get("AIP2P_API_KEY", "").strip()
         if not user_id or not api_key:
             raise ValueError(
                 "Missing credentials. Set AIP2P_USER_ID and AIP2P_API_KEY "
-                "or pass them on the command line."
+                "in .env or the environment, or pass them on the command line."
             )
         return ApiCredentials(user_id=user_id, api_key=api_key)
 
@@ -106,10 +112,14 @@ class P2PClient:
         *,
         base_url: str = API_URL,
         curl_binary: str | None = None,
+        max_get_retries: int = 2,
+        retry_backoff_s: float = 1.0,
     ) -> None:
         self.credentials = credentials
         self.base_url = base_url
         self.curl_binary = curl_binary or shutil.which("curl.exe") or shutil.which("curl")
+        self.max_get_retries = max_get_retries
+        self.retry_backoff_s = retry_backoff_s
         if not self.curl_binary:
             raise RuntimeError("curl is required to use the AI P2P API client.")
 
@@ -228,61 +238,116 @@ class P2PClient:
 
     def _request(self, method: str, params: Mapping[str, Any]) -> str:
         method_upper = method.upper()
-        args = [
-            self.curl_binary,
-            "--silent",
-            "--show-error",
-            "--location",
-            "--header",
-            f"userId: {self.credentials.user_id}",
-            "--header",
-            f"x-api-key: {self.credentials.api_key}",
-            "--header",
-            "Accept: application/json",
-            "--write-out",
-            f"\n{HTTP_STATUS_MARKER}%{{http_code}}",
-        ]
-
-        if method_upper == "GET":
-            query = urlencode(_stringify_mapping(params))
-            url = self.base_url if not query else f"{self.base_url}?{query}"
-            args.extend(["--request", "GET", "--url", url])
-        elif method_upper == "POST":
-            args.extend(
-                [
-                    "--request",
-                    "POST",
-                    "--url",
-                    self.base_url,
-                    "--header",
-                    "Content-Type: application/x-www-form-urlencoded",
-                ]
-            )
-            for key, value in _stringify_mapping(params).items():
-                args.extend(["--data-urlencode", f"{key}={value}"])
-        else:
+        if method_upper not in {"GET", "POST"}:
             raise ValueError(f"Unsupported HTTP method: {method}")
 
-        proc = subprocess.run(args, capture_output=True, text=True, check=False)
-        if proc.returncode != 0:
-            message = proc.stderr.strip() or proc.stdout.strip() or "curl request failed"
-            raise P2PApiError(message)
+        max_attempts = self.max_get_retries + 1 if method_upper == "GET" else 1
+        last_error: P2PApiError | None = None
 
-        if HTTP_STATUS_MARKER not in proc.stdout:
-            raise P2PApiError("Could not determine HTTP status from curl response.")
-        body, _, suffix = proc.stdout.rpartition(HTTP_STATUS_MARKER)
-        status_text = suffix.strip()
-        try:
-            status_code = int(status_text)
-        except ValueError as exc:
-            raise P2PApiError(
-                f"Could not parse HTTP status from curl response: {status_text!r}"
-            ) from exc
+        for attempt in range(1, max_attempts + 1):
+            args = [
+                self.curl_binary,
+                "--silent",
+                "--show-error",
+                "--location",
+                "--http1.1",
+                "--header",
+                f"userId: {self.credentials.user_id}",
+                "--header",
+                f"x-api-key: {self.credentials.api_key}",
+                "--header",
+                "Accept: application/json",
+                "--write-out",
+                f"\n{HTTP_STATUS_MARKER}%{{http_code}}",
+            ]
 
-        cleaned_body = body.rstrip()
-        if status_code >= 400:
-            raise P2PApiError(f"HTTP {status_code}: {cleaned_body[:200]}")
-        return cleaned_body
+            if method_upper == "GET":
+                query = urlencode(_stringify_mapping(params))
+                url = self.base_url if not query else f"{self.base_url}?{query}"
+                args.extend(["--request", "GET", "--url", url])
+            else:
+                args.extend(
+                    [
+                        "--request",
+                        "POST",
+                        "--url",
+                        self.base_url,
+                        "--header",
+                        "Content-Type: application/x-www-form-urlencoded",
+                    ]
+                )
+                for key, value in _stringify_mapping(params).items():
+                    args.extend(["--data-urlencode", f"{key}={value}"])
+
+            proc = subprocess.run(args, capture_output=True, text=True, check=False)
+            if proc.returncode != 0:
+                message = proc.stderr.strip() or proc.stdout.strip() or "curl request failed"
+                error = P2PApiError(message)
+                if _should_retry_request(
+                    method_upper,
+                    curl_exit_code=proc.returncode,
+                    http_status_code=None,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                ):
+                    last_error = error
+                    time.sleep(self.retry_backoff_s * attempt)
+                    continue
+                raise error
+
+            if HTTP_STATUS_MARKER not in proc.stdout:
+                error = P2PApiError("Could not determine HTTP status from curl response.")
+                if _should_retry_request(
+                    method_upper,
+                    curl_exit_code=None,
+                    http_status_code=None,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                ):
+                    last_error = error
+                    time.sleep(self.retry_backoff_s * attempt)
+                    continue
+                raise error
+
+            body, _, suffix = proc.stdout.rpartition(HTTP_STATUS_MARKER)
+            status_text = suffix.strip()
+            try:
+                status_code = int(status_text)
+            except ValueError as exc:
+                error = P2PApiError(
+                    f"Could not parse HTTP status from curl response: {status_text!r}"
+                )
+                if _should_retry_request(
+                    method_upper,
+                    curl_exit_code=None,
+                    http_status_code=None,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                ):
+                    last_error = error
+                    time.sleep(self.retry_backoff_s * attempt)
+                    continue
+                raise error from exc
+
+            cleaned_body = body.rstrip()
+            if status_code >= 400:
+                error = P2PApiError(f"HTTP {status_code}: {cleaned_body[:200]}")
+                if _should_retry_request(
+                    method_upper,
+                    curl_exit_code=None,
+                    http_status_code=status_code,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                ):
+                    last_error = error
+                    time.sleep(self.retry_backoff_s * attempt)
+                    continue
+                raise error
+            return cleaned_body
+
+        if last_error is not None:
+            raise last_error
+        raise P2PApiError("Request failed after retries.")
 
 
 def parse_remote_move(raw_move: Mapping[str, Any]) -> RemoteMove:
@@ -472,6 +537,25 @@ def _as_int_list(value: Any) -> list[int]:
             return []
         return [_coerce_int(part) for part in stripped.split(",")]
     raise P2PApiError(f"Expected list-like value, got {type(value).__name__}.")
+
+
+def _should_retry_request(
+    method: str,
+    *,
+    curl_exit_code: int | None,
+    http_status_code: int | None,
+    attempt: int,
+    max_attempts: int,
+) -> bool:
+    if method != "GET" or attempt >= max_attempts:
+        return False
+    if curl_exit_code is None and http_status_code is None:
+        return True
+    if curl_exit_code is not None:
+        return curl_exit_code in CURL_TRANSIENT_EXIT_CODES
+    if http_status_code is not None:
+        return http_status_code in HTTP_TRANSIENT_STATUS_CODES
+    return False
 
 
 def _require_int(payload: Mapping[str, Any], key: str) -> int:

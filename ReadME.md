@@ -102,7 +102,31 @@ Authentication is done with headers:
 - `userId`
 - `x-api-key`
 
-Set your credentials in PowerShell:
+The easiest way to run the live CLI is with a local `.env` file.
+
+This repo includes:
+
+- `.env`
+  Your local machine values. This file is ignored by git.
+- `.env.example`
+  A safe template you can copy for another machine.
+
+Example `.env`:
+
+```text
+AIP2P_USER_ID=3733
+AIP2P_API_KEY=YOUR_API_KEY
+AIP2P_TEAM_ID=1484
+AIP2P_OPPONENT_TEAM_ID=1492
+AIP2P_GAME_ID=
+AIP2P_BOARD_SIZE=5
+AIP2P_TARGET=4
+AIP2P_DEPTH=3
+AIP2P_TIME_LIMIT=1.5
+AIP2P_POLL_SECONDS=5
+```
+
+You can also set credentials in PowerShell instead:
 
 ```powershell
 $env:AIP2P_USER_ID = "YOUR_USER_ID"
@@ -110,6 +134,8 @@ $env:AIP2P_API_KEY = "YOUR_API_KEY"
 ```
 
 After that, you can omit `--user-id` and `--api-key` in the commands below.
+If `AIP2P_TEAM_ID`, `AIP2P_OPPONENT_TEAM_ID`, or `AIP2P_GAME_ID` are set in `.env`,
+you can omit those flags too.
 
 Check that authentication works:
 
@@ -144,6 +170,12 @@ New teams start empty. You must add yourself after creating the team.
 
 ```powershell
 python -m ttt.p2p_cli add-member --team-id 1484 --member-user-id 3733
+```
+
+If `AIP2P_TEAM_ID` is already set in `.env`, you can shorten that to:
+
+```powershell
+python -m ttt.p2p_cli add-member --member-user-id 3733
 ```
 
 ### 4. Verify team members
@@ -201,6 +233,22 @@ Larger board example:
 python -m ttt.p2p_cli create-game --team-id 1484 --opponent-team-id 1453 --board-size 20 --target 10
 ```
 
+If your `.env` already contains:
+
+- `AIP2P_TEAM_ID`
+- `AIP2P_OPPONENT_TEAM_ID`
+- `AIP2P_BOARD_SIZE`
+- `AIP2P_TARGET`
+
+then you can simply run:
+
+```powershell
+python -m ttt.p2p_cli create-game
+```
+
+When `create-game` succeeds, the CLI automatically writes the returned game ID
+into `AIP2P_GAME_ID` inside your local `.env` file.
+
 Notes:
 
 - `board-size` is the board width and height.
@@ -214,6 +262,12 @@ Notes:
 
 ```powershell
 python -m ttt.p2p_cli game-details --game-id 5483
+```
+
+If `AIP2P_GAME_ID` is set in `.env`, you can shorten that to:
+
+```powershell
+python -m ttt.p2p_cli game-details
 ```
 
 This shows:
@@ -253,6 +307,12 @@ Use this when you want the agent to make exactly one move if it is your turn:
 python -m ttt.p2p_cli auto-move --game-id 5483 --team-id 1484 --depth 3 --time-limit 1.5
 ```
 
+With `.env` defaults for game/team/depth/time limit, this can be as short as:
+
+```powershell
+python -m ttt.p2p_cli auto-move
+```
+
 What it does:
 
 - downloads the current board
@@ -270,6 +330,12 @@ Use this during a live match:
 python -m ttt.p2p_cli play-loop --game-id 5483 --team-id 1484 --depth 3 --time-limit 1.5 --poll-seconds 5
 ```
 
+With `.env` defaults for game/team/depth/time/polling, this can be as short as:
+
+```powershell
+python -m ttt.p2p_cli play-loop
+```
+
 What it does:
 
 - checks the game every few seconds
@@ -282,15 +348,17 @@ Stop it with `Ctrl+C`.
 
 ### First match setup
 
-1. Set `AIP2P_USER_ID` and `AIP2P_API_KEY`.
+1. Fill in `.env` with `AIP2P_USER_ID`, `AIP2P_API_KEY`, and your team defaults.
 2. Run `python -m ttt.p2p_cli my-teams`.
 3. Create a team if needed.
 4. Add yourself to the team.
 5. Verify team membership.
 6. Get the opponent team ID.
-7. Create a game.
-8. Check `game-details` once to confirm the game exists.
-9. Start `play-loop` for that game.
+7. Update `AIP2P_OPPONENT_TEAM_ID` in `.env` if needed.
+8. Create a game.
+9. The CLI writes the returned game ID into `AIP2P_GAME_ID` in `.env`.
+10. Check `game-details` once to confirm the game exists.
+11. Start `play-loop` for that game.
 
 ### During the match
 
@@ -378,12 +446,14 @@ Use:
 
 ### API key safety
 
-Do not hardcode your API key into the repository. Prefer environment variables:
+Do not hardcode your API key into tracked source files. Prefer `.env` or environment variables:
 
 ```powershell
 $env:AIP2P_USER_ID = "YOUR_USER_ID"
 $env:AIP2P_API_KEY = "YOUR_API_KEY"
 ```
+
+This repo ignores `.env`, so it is the preferred place for local secrets.
 
 If your key was exposed in a shared place, regenerate it from the AI P2P website.
 

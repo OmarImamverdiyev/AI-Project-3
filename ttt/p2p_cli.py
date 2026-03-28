@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
+from pathlib import Path
 
 from .agent import MinimaxAgent, symbol_name
+from .env_utils import env_float, env_int, env_str, load_dotenv, upsert_dotenv
 from .game import O, X
 from .p2p import ApiCredentials, P2PApiError, P2PClient, RemoteGameSnapshot
 
@@ -14,13 +15,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI P2P Tic Tac Toe helper")
     parser.add_argument(
         "--user-id",
-        default=os.getenv("AIP2P_USER_ID"),
-        help="AI P2P user ID. Defaults to AIP2P_USER_ID.",
+        default=env_str("AIP2P_USER_ID"),
+        help="AI P2P user ID. Defaults to .env/AIP2P_USER_ID.",
     )
     parser.add_argument(
         "--api-key",
-        default=os.getenv("AIP2P_API_KEY"),
-        help="AI P2P API key. Defaults to AIP2P_API_KEY.",
+        default=env_str("AIP2P_API_KEY"),
+        help="AI P2P API key. Defaults to .env/AIP2P_API_KEY.",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -31,70 +32,160 @@ def build_parser() -> argparse.ArgumentParser:
     create_team.add_argument("--name", required=True, help="New team name")
 
     add_member = subparsers.add_parser("add-member", help="Add a user to a team")
-    add_member.add_argument("--team-id", required=True, type=int)
+    add_member.add_argument(
+        "--team-id",
+        required=env_int("AIP2P_TEAM_ID") is None,
+        default=env_int("AIP2P_TEAM_ID"),
+        type=int,
+        help="Team ID. Defaults to .env/AIP2P_TEAM_ID.",
+    )
     add_member.add_argument("--member-user-id", required=True, type=int)
 
     remove_member = subparsers.add_parser("remove-member", help="Remove a user from a team")
-    remove_member.add_argument("--team-id", required=True, type=int)
+    remove_member.add_argument(
+        "--team-id",
+        required=env_int("AIP2P_TEAM_ID") is None,
+        default=env_int("AIP2P_TEAM_ID"),
+        type=int,
+        help="Team ID. Defaults to .env/AIP2P_TEAM_ID.",
+    )
     remove_member.add_argument("--member-user-id", required=True, type=int)
 
     team_members = subparsers.add_parser("team-members", help="List the members of a team")
-    team_members.add_argument("--team-id", required=True, type=int)
+    team_members.add_argument(
+        "--team-id",
+        required=env_int("AIP2P_TEAM_ID") is None,
+        default=env_int("AIP2P_TEAM_ID"),
+        type=int,
+        help="Team ID. Defaults to .env/AIP2P_TEAM_ID.",
+    )
 
     my_games = subparsers.add_parser("my-games", help="List your games")
     my_games.add_argument("--open-only", action="store_true", help="Only show open games")
 
     create_game = subparsers.add_parser("create-game", help="Create a new game")
-    create_game.add_argument("--team-id", required=True, type=int, help="Your team ID")
+    create_game.add_argument(
+        "--team-id",
+        required=env_int("AIP2P_TEAM_ID") is None,
+        default=env_int("AIP2P_TEAM_ID"),
+        type=int,
+        help="Your team ID. Defaults to .env/AIP2P_TEAM_ID.",
+    )
     create_game.add_argument(
         "--opponent-team-id",
-        required=True,
+        required=env_int("AIP2P_OPPONENT_TEAM_ID") is None,
+        default=env_int("AIP2P_OPPONENT_TEAM_ID"),
         type=int,
-        help="Opponent team ID",
+        help="Opponent team ID. Defaults to .env/AIP2P_OPPONENT_TEAM_ID.",
     )
-    create_game.add_argument("--board-size", type=int, help="Board size (default server value is 12)")
-    create_game.add_argument("--target", type=int, help="Target in a row (default server value is 6)")
+    create_game.add_argument(
+        "--board-size",
+        default=env_int("AIP2P_BOARD_SIZE"),
+        type=int,
+        help="Board size. Defaults to .env/AIP2P_BOARD_SIZE or the server default 12.",
+    )
+    create_game.add_argument(
+        "--target",
+        default=env_int("AIP2P_TARGET"),
+        type=int,
+        help="Target in a row. Defaults to .env/AIP2P_TARGET or the server default 6.",
+    )
 
     game_details = subparsers.add_parser("game-details", help="Show game details")
-    game_details.add_argument("--game-id", required=True, type=int)
+    game_details.add_argument(
+        "--game-id",
+        required=env_int("AIP2P_GAME_ID") is None,
+        default=env_int("AIP2P_GAME_ID"),
+        type=int,
+        help="Game ID. Defaults to .env/AIP2P_GAME_ID.",
+    )
 
     board = subparsers.add_parser("board", help="Show a game board")
-    board.add_argument("--game-id", required=True, type=int)
+    board.add_argument(
+        "--game-id",
+        required=env_int("AIP2P_GAME_ID") is None,
+        default=env_int("AIP2P_GAME_ID"),
+        type=int,
+        help="Game ID. Defaults to .env/AIP2P_GAME_ID.",
+    )
 
     moves = subparsers.add_parser("moves", help="Show recent moves")
-    moves.add_argument("--game-id", required=True, type=int)
+    moves.add_argument(
+        "--game-id",
+        required=env_int("AIP2P_GAME_ID") is None,
+        default=env_int("AIP2P_GAME_ID"),
+        type=int,
+        help="Game ID. Defaults to .env/AIP2P_GAME_ID.",
+    )
     moves.add_argument("--count", type=int, default=20)
 
     auto_move = subparsers.add_parser(
         "auto-move",
         help="Compute and submit exactly one move if it is your turn",
     )
-    auto_move.add_argument("--game-id", required=True, type=int)
-    auto_move.add_argument("--team-id", required=True, type=int)
-    auto_move.add_argument("--depth", type=int, default=3)
-    auto_move.add_argument("--time-limit", type=float, default=1.5)
+    auto_move.add_argument(
+        "--game-id",
+        required=env_int("AIP2P_GAME_ID") is None,
+        default=env_int("AIP2P_GAME_ID"),
+        type=int,
+        help="Game ID. Defaults to .env/AIP2P_GAME_ID.",
+    )
+    auto_move.add_argument(
+        "--team-id",
+        required=env_int("AIP2P_TEAM_ID") is None,
+        default=env_int("AIP2P_TEAM_ID"),
+        type=int,
+        help="Team ID. Defaults to .env/AIP2P_TEAM_ID.",
+    )
+    auto_move.add_argument("--depth", type=int, default=env_int("AIP2P_DEPTH") or 3)
+    auto_move.add_argument(
+        "--time-limit",
+        type=float,
+        default=env_float("AIP2P_TIME_LIMIT") or 1.5,
+    )
 
     play_loop = subparsers.add_parser(
         "play-loop",
         help="Poll a game and submit moves automatically when it is your turn",
     )
-    play_loop.add_argument("--game-id", required=True, type=int)
-    play_loop.add_argument("--team-id", required=True, type=int)
-    play_loop.add_argument("--depth", type=int, default=3)
-    play_loop.add_argument("--time-limit", type=float, default=1.5)
-    play_loop.add_argument("--poll-seconds", type=float, default=5.0)
+    play_loop.add_argument(
+        "--game-id",
+        required=env_int("AIP2P_GAME_ID") is None,
+        default=env_int("AIP2P_GAME_ID"),
+        type=int,
+        help="Game ID. Defaults to .env/AIP2P_GAME_ID.",
+    )
+    play_loop.add_argument(
+        "--team-id",
+        required=env_int("AIP2P_TEAM_ID") is None,
+        default=env_int("AIP2P_TEAM_ID"),
+        type=int,
+        help="Team ID. Defaults to .env/AIP2P_TEAM_ID.",
+    )
+    play_loop.add_argument("--depth", type=int, default=env_int("AIP2P_DEPTH") or 3)
+    play_loop.add_argument(
+        "--time-limit",
+        type=float,
+        default=env_float("AIP2P_TIME_LIMIT") or 1.5,
+    )
+    play_loop.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=env_float("AIP2P_POLL_SECONDS") or 5.0,
+    )
 
     return parser
 
 
 def main() -> None:
+    load_dotenv()
     parser = build_parser()
     args = parser.parse_args()
 
     if not args.user_id or not args.api_key:
         parser.error(
             "Missing credentials. Pass --user-id/--api-key or set "
-            "AIP2P_USER_ID and AIP2P_API_KEY."
+            "AIP2P_USER_ID and AIP2P_API_KEY in .env or the environment."
         )
 
     credentials = ApiCredentials(user_id=str(args.user_id), api_key=str(args.api_key))
@@ -147,6 +238,7 @@ def _dispatch(client: P2PClient, args: argparse.Namespace) -> None:
             target=args.target,
         )
         print(f"Created game {game_id}")
+        _remember_game_defaults(args, game_id)
         return
 
     if args.command == "game-details":
@@ -235,32 +327,36 @@ def _play_loop(
     last_seen: tuple[int, int | None, int | None] | None = None
     try:
         while True:
-            snapshot = client.snapshot(game_id)
-            current_signature = (
-                snapshot.details.move_count,
-                snapshot.details.turn_team_id,
-                snapshot.details.winner_team_id,
-            )
-            if current_signature != last_seen:
-                _print_snapshot(snapshot)
-                last_seen = current_signature
-
-            if snapshot.details.winner_team_id is not None or snapshot.state.is_full():
-                print("Game finished.")
-                return
-
-            if snapshot.details.turn_team_id == team_id:
-                _auto_move(
-                    client,
-                    game_id=game_id,
-                    team_id=team_id,
-                    depth=depth,
-                    time_limit=time_limit,
+            try:
+                snapshot = client.snapshot(game_id)
+                current_signature = (
+                    snapshot.details.move_count,
+                    snapshot.details.turn_team_id,
+                    snapshot.details.winner_team_id,
                 )
-                time.sleep(1.0)
-                continue
+                if current_signature != last_seen:
+                    _print_snapshot(snapshot)
+                    last_seen = current_signature
 
-            time.sleep(poll_seconds)
+                if snapshot.details.winner_team_id is not None or snapshot.state.is_full():
+                    print("Game finished.")
+                    return
+
+                if snapshot.details.turn_team_id == team_id:
+                    _auto_move(
+                        client,
+                        game_id=game_id,
+                        team_id=team_id,
+                        depth=depth,
+                        time_limit=time_limit,
+                    )
+                    time.sleep(1.0)
+                    continue
+
+                time.sleep(poll_seconds)
+            except P2PApiError as exc:
+                print(f"Temporary API issue: {exc}. Retrying in {poll_seconds:.1f}s...")
+                time.sleep(poll_seconds)
     except KeyboardInterrupt:
         print("Stopped polling.")
 
@@ -285,6 +381,24 @@ def _print_snapshot(snapshot: RemoteGameSnapshot) -> None:
     if details.winner_team_id is not None:
         print(f"Winner team: {details.winner_team_id}")
     print(snapshot.state.pretty_str())
+
+
+def _remember_game_defaults(args: argparse.Namespace, game_id: int) -> None:
+    dotenv_path = Path(".env")
+    if not dotenv_path.exists():
+        return
+
+    upsert_dotenv(
+        dotenv_path,
+        {
+            "AIP2P_TEAM_ID": args.team_id,
+            "AIP2P_OPPONENT_TEAM_ID": args.opponent_team_id,
+            "AIP2P_GAME_ID": game_id,
+            "AIP2P_BOARD_SIZE": args.board_size,
+            "AIP2P_TARGET": args.target,
+        },
+    )
+    print("Updated .env with the new game defaults.")
 
 
 if __name__ == "__main__":

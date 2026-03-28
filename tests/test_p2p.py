@@ -5,6 +5,7 @@ from ttt.p2p import (
     RemoteGameDetails,
     RemoteMove,
     _as_int_list,
+    _should_retry_request,
     build_game_state,
     infer_symbol_by_team,
     parse_board_map_payload,
@@ -125,6 +126,41 @@ class P2PGameStateTests(unittest.TestCase):
         self.assertEqual(state.at(11, 9), X)
         self.assertEqual(state.current_player, O)
         self.assertEqual(len(state.legal_moves()), details.board_size * details.board_size - 4)
+
+
+class P2PRetryTests(unittest.TestCase):
+    def test_retry_transient_get_curl_reset(self) -> None:
+        should_retry = _should_retry_request(
+            "GET",
+            curl_exit_code=35,
+            http_status_code=None,
+            attempt=1,
+            max_attempts=3,
+        )
+
+        self.assertTrue(should_retry)
+
+    def test_do_not_retry_post_curl_reset(self) -> None:
+        should_retry = _should_retry_request(
+            "POST",
+            curl_exit_code=35,
+            http_status_code=None,
+            attempt=1,
+            max_attempts=3,
+        )
+
+        self.assertFalse(should_retry)
+
+    def test_retry_transient_get_http_status(self) -> None:
+        should_retry = _should_retry_request(
+            "GET",
+            curl_exit_code=None,
+            http_status_code=503,
+            attempt=1,
+            max_attempts=3,
+        )
+
+        self.assertTrue(should_retry)
 
 
 if __name__ == "__main__":
